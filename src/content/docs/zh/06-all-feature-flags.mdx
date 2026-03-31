@@ -1,0 +1,144 @@
+---
+title: "完整清单：所有构建标志与运行时门控"
+description: "我们在 Claude Code 源码中发现的每一个特性标志 (Feature Flag)、GrowthBook 门控和环境变量。"
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+:::note[免责声明]
+本文所有分析均基于某个版本的 Claude Code 源码 [instructkr/claude-code](https://github.com/instructkr/claude-code)。Claude Code **并非**开源项目，所有知识产权归 **Anthropic** 所有。本文仅为独立的源代码分析。
+:::
+
+这是我们在 Claude Code 源码中识别出的所有门控机制的完整参考。它们分为四类：构建时特性标志 (Feature Flags)、GrowthBook 运行时标志、环境变量和 API Beta 请求头。
+
+<Aside type="caution">
+本清单通过源码静态分析编制。标志名称、行为和可用性可能因版本而异。部分标志可能已弃用或尚未激活。
+</Aside>
+
+## 构建时特性标志 (Build-Time Feature Flags)
+
+这些标志在**构建时**通过引用 `bun:bundle` 中定义的 `feature()` 调用来求值。如果某个标志在构建配置中未启用，则相关代码会被死代码消除 (Tree-shaking) 从最终产物中完全移除 -- 在运行时根本不存在。
+
+| 标志名称 | 类别 | 描述 | 可能仅限 Ant？ |
+|----------|------|------|---------------|
+| `AGENT_MEMORY_SNAPSHOT` | 内存 | 代理内存持久化快照 | 是 |
+| `AGENT_TRIGGERS` | 调度 | 定时代理执行 | 是 |
+| `AGENT_TRIGGERS_REMOTE` | 调度 | 远程代理调度 | 是 |
+| `ANTI_DISTILLATION_CC` | 安全 | 反蒸馏内容分类器 | 是 |
+| `AUTO_THEME` | UI | 自动主题检测 | 否 |
+| `AWAY_SUMMARY` | 用户体验 | 离开模式摘要 | 是 |
+| `BG_SESSIONS` | 会话 | 后台会话支持 | 是 |
+| `BRIDGE_MODE` | 基础设施 | 远程桥接协议 | 是 |
+| `BUDDY` / `BUDDIES` | 用户体验 | AI 辅导伙伴 | 是 |
+| `BUILDING_CLAUDE_APPS` | 技能 | Claude API 技能 | 否 |
+| `BUILTIN_EXPLORE_PLAN_AGENTS` | 代理 | 内置代理模板 | 是 |
+| `CCR_MIRROR` | 基础设施 | 云计算资源镜像 | 是 |
+| `CHAT_MODES` | UI | 聊天模式选择界面 | 是 |
+| `CONNECTOR_TEXT` | 处理 | 连接器文本摘要 | 是 |
+| `CONTEXT_COLLAPSE` | 性能 | 上下文窗口优化 | 是 |
+| `COORDINATOR_MODE` | 代理 | 多工作者编排 | 是 |
+| `DAEMON` | 基础设施 | 后台守护进程模式 | 是 |
+| `DIRECT_CONNECT` | 基础设施 | 直连 WebSocket 连接 | 是 |
+| `ENHANCED_TELEMETRY_BETA` | 分析 | 增强分析 | 是 |
+| `FORK_SUBAGENT` | 代理 | 缓存优化的子代理分叉 | 是 |
+| `HISTORY_PICKER` / `HISTORY_SNIP` | 会话 | 会话历史功能 | 是 |
+| `KAIROS` | 后台任务 | 异步/后台任务系统 | 是 |
+| `KAIROS_BRIEF` | 后台任务 | 简要格式化 | 是 |
+| `KAIROS_CHANNELS` | 后台任务 | MCP 通道通知 | 是 |
+| `KAIROS_DREAM` | 内存 | 自动记忆整合 | 是 |
+| `KAIROS_GITHUB_WEBHOOKS` | 集成 | GitHub Webhook 集成 | 是 |
+| `KAIROS_PUSH_NOTIFICATION` | 通知 | 推送通知 | 是 |
+| `MCP_RICH_OUTPUT` | MCP | 富 MCP 工具输出 | 是 |
+| `MCP_SKILLS` | MCP | MCP 工具技能集成 | 是 |
+| `MESSAGE_ACTIONS` | UI | 消息操作按钮 | 是 |
+| `NATIVE_CLIENT_ATTESTATION` | 安全 | 客户端认证验证 | 是 |
+| `NATIVE_CLIPBOARD_IMAGE` | UI | 原生剪贴板图片支持 | 否 |
+| `PROACTIVE` | 代理 | 自主执行 | 是 |
+| `PROMPT_CACHE_BREAK_DETECTION` | 性能 | 检测提示缓存失效 | 是 |
+| `REACTIVE_COMPACT` | 性能 | 响应式上下文压缩 | 是 |
+| `REVIEW_ARTIFACT` | 审查 | 产物审查 | 否 |
+| `RUN_SKILL_GENERATOR` | 技能 | 技能生成 | 否 |
+| `SELF_HOSTED_RUNNER` | 基础设施 | 自托管运行器 | 是 |
+| `SSH_REMOTE` | 基础设施 | SSH 远程执行 | 是 |
+| `TRANSCRIPT_CLASSIFIER` | 权限 | 自动模式权限分类器 | 是 |
+| `ULTRAPLAN` | 规划 | 超详细规划 | 是 |
+| `ULTRATHINK` | 思考 | 扩展思考 | 是 |
+| `UPLOAD_USER_SETTINGS` / `DOWNLOAD_USER_SETTINGS` | 设置 | 云端设置同步 | 是 |
+| `VERIFICATION_AGENT` | 代理 | 代码验证代理 | 是 |
+| `VOICE_MODE` | 输入 | 语音输入/输出 | 是 |
+| `WEB_BROWSER_TOOL` | 工具 | 浏览器自动化 | 是 |
+
+<Aside type="tip">
+大多数标志都仅限 Ant 内部使用。少数包含在公开版本中的标志（`AUTO_THEME`、`BUILDING_CLAUDE_APPS`、`NATIVE_CLIPBOARD_IMAGE`、`REVIEW_ARTIFACT`、`RUN_SKILL_GENERATOR`）往往是 UI 优化或非敏感的技能功能。
+</Aside>
+
+## 关键 GrowthBook 运行时标志
+
+GrowthBook 标志（以 `tengu_` 为前缀）在**运行时**通过查询 Anthropic 的特性标志服务来求值。即使你的构建中存在相应的代码路径，这些标志也可以根据你的用户账户、组织或 A/B 测试群组在服务端启用或禁用功能。
+
+| 标志名称 | 用途 |
+|----------|------|
+| `tengu_amber_flint` | Agent Swarms 紧急开关 |
+| `tengu_amber_quartz_disabled` | 语音模式紧急开关 |
+| `tengu_amber_stoat` | Explore/Plan 代理（默认开启） |
+| `tengu_ant_model_override` | Anthropic 员工模型覆盖 |
+| `tengu_auto_mode_config` | 自动模式配置（enabled / opt-in / disabled） |
+| `tengu_ccr_bridge_multi_session` | 多会话桥接 |
+| `tengu_hive_evidence` | 验证代理 |
+| `tengu_harbor` | MCP 通道/通知 |
+| `tengu_kairos_cron` | 定时代理执行 |
+| `tengu_kairos_cron_durable` | 持久化定时任务状态 |
+| `tengu_malort_pedway` | Computer Use MCP 配置 |
+| `tengu_max_version_config` | 版本紧急开关 |
+| `tengu_onyx_plover` | 自动记忆整合配置 |
+| `tengu_otk_slot_v1` | 一次性密钥槽 |
+| `tengu_remote_backend` | 远程 TUI 后端 |
+| `tengu_scratch` | 草稿持久化存储 |
+| `tengu_sedge_lantern` | 离开摘要 |
+| `tengu_session_memory` | 跨会话记忆 |
+| `tengu_sessions_elevated_auth_enforcement` | 可信设备要求 |
+| `tengu_slim_subagent_claudemd` | 只读代理跳过 CLAUDE.md |
+| `tengu_surreal_dali` | 远程触发工具 |
+| `tengu_tool_pear` | 严格工具使用 |
+| `tengu_transcript_classifier` | 自动模式分类器 |
+| `tengu_willow_mode` | 上下文优化（off / light / full） |
+
+<Aside type="note">
+`tengu_` 前缀似乎是一种代号命名约定。"天狗"(Tengu) 是日本民间传说中的生物 -- 作为一个在你编码过程中监视和干预的工具，这个名字相当贴切。
+</Aside>
+
+## 关键环境变量
+
+这些环境变量可以在启动 Claude Code 之前在 Shell 中设置。有些是构建时门控，有些是运行时开关。
+
+| 变量 | 用途 |
+|------|------|
+| `USER_TYPE=ant` | 构建时 Anthropic 员工门控 |
+| `CLAUDE_CODE_COORDINATOR_MODE=1` | 启用协调器模式 |
+| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` | 启用代理团队 |
+| `CLAUDE_CODE_PROACTIVE=1` | 启用主动模式 |
+| `CLAUDE_CODE_UNDERCOVER=1` | 强制隐身模式 |
+| `CLAUDE_CODE_TEAMMATE_COMMAND=/path` | 自定义队友二进制路径 |
+| `CLAUDE_CODE_SIMPLE=1` | 协调器简单模式 |
+| `CLAUDE_CODE_PLAN_MODE_REQUIRED=1` | 要求计划模式 |
+| `CLAUDE_INTERNAL_FC_OVERRIDES='{}' ` | 特性标志覆盖（JSON 格式） |
+| `CLAUDE_CODE_GB_BASE_URL=...` | GrowthBook 覆盖 |
+| `CLAUDE_CODE_TERMINAL_RECORDING=1` | 终端录制 |
+| `MONOREPO_ROOT_DIR` | Anthropic Monorepo 检测 |
+| `ALLOW_ANT_COMPUTER_USE_MCP` | 覆盖 Computer Use 门控 |
+
+<Aside type="caution">
+在运行时设置 `USER_TYPE=ant` 环境变量**不会**改变构建时的特性标志。`USER_TYPE` 检查发生在构建/打包阶段，而不是运行时。你需要在设置此值后从源码重新构建。
+</Aside>
+
+## 仅限 Ant 的 API Beta 请求头
+
+这些 HTTP 请求头会发送到 Anthropic API 以解锁服务端 Beta 功能。它们仅在运行内部 (Ant) 构建时才会被包含。
+
+| 请求头常量 | 用途 |
+|-----------|------|
+| `CLI_INTERNAL_BETA_HEADER` | 内部 CLI Beta 访问 -- 解锁仅限 Ant 的 API 能力 |
+| `SUMMARIZE_CONNECTOR_TEXT_BETA_HEADER` | 反蒸馏连接器文本处理 |
+| `AFK_MODE_BETA_HEADER` | 离开键盘模式 -- 表示用户当前未在主动关注 |
+
+这些请求头尤为重要，因为即使你启用了客户端代码路径，**API 服务端**也会拒绝包含这些请求头的请求，除非你的账户已获得授权。这是一个无法通过修改客户端来绕过的服务端门控。

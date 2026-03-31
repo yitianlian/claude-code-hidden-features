@@ -1,0 +1,144 @@
+---
+title: "The Complete List: All Build Flags & Runtime Gates"
+description: "Every feature flag, GrowthBook gate, and environment variable we found in the Claude Code source."
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+:::note[Disclaimer]
+All analysis is based on a specific version of the Claude Code source at [instructkr/claude-code](https://github.com/instructkr/claude-code). Claude Code is **not** open-source — all intellectual property belongs to **Anthropic**. This is independent source code analysis only.
+:::
+
+This is the comprehensive reference for every gating mechanism we identified in the Claude Code source code. These fall into four categories: build-time feature flags, GrowthBook runtime flags, environment variables, and API beta headers.
+
+<Aside type="caution">
+This list was compiled through static analysis of the source code. Flag names, behaviors, and availability may change between versions. Some flags may be deprecated or not yet active.
+</Aside>
+
+## Build-Time Feature Flags
+
+These flags are evaluated at **build time** via `feature()` calls that reference definitions from `bun:bundle`. If a flag is not enabled in the build configuration, the associated code is tree-shaken out of the final bundle entirely -- it does not exist at runtime.
+
+| Flag Name | Category | Description | Likely Ant-Only? |
+|-----------|----------|-------------|------------------|
+| `AGENT_MEMORY_SNAPSHOT` | Memory | Agent memory persistence snapshots | Yes |
+| `AGENT_TRIGGERS` | Scheduling | Scheduled agent execution | Yes |
+| `AGENT_TRIGGERS_REMOTE` | Scheduling | Remote agent scheduling | Yes |
+| `ANTI_DISTILLATION_CC` | Security | Anti-distillation content classifier | Yes |
+| `AUTO_THEME` | UI | Automatic theme detection | No |
+| `AWAY_SUMMARY` | UX | Away mode summarization | Yes |
+| `BG_SESSIONS` | Sessions | Background session support | Yes |
+| `BRIDGE_MODE` | Infrastructure | Remote bridge protocol | Yes |
+| `BUDDY` / `BUDDIES` | UX | AI coaching companion | Yes |
+| `BUILDING_CLAUDE_APPS` | Skills | Claude API skill | No |
+| `BUILTIN_EXPLORE_PLAN_AGENTS` | Agents | Built-in agent templates | Yes |
+| `CCR_MIRROR` | Infrastructure | Cloud compute resource mirroring | Yes |
+| `CHAT_MODES` | UI | Chat mode selection UI | Yes |
+| `CONNECTOR_TEXT` | Processing | Connector text summarization | Yes |
+| `CONTEXT_COLLAPSE` | Performance | Context window optimization | Yes |
+| `COORDINATOR_MODE` | Agents | Multi-worker orchestration | Yes |
+| `DAEMON` | Infrastructure | Background daemon mode | Yes |
+| `DIRECT_CONNECT` | Infrastructure | Direct WebSocket connections | Yes |
+| `ENHANCED_TELEMETRY_BETA` | Analytics | Extended analytics | Yes |
+| `FORK_SUBAGENT` | Agents | Cache-optimized subagent forking | Yes |
+| `HISTORY_PICKER` / `HISTORY_SNIP` | Sessions | Session history features | Yes |
+| `KAIROS` | Background Tasks | Async/background task system | Yes |
+| `KAIROS_BRIEF` | Background Tasks | Brief formatting | Yes |
+| `KAIROS_CHANNELS` | Background Tasks | MCP channel notifications | Yes |
+| `KAIROS_DREAM` | Memory | Auto-memory consolidation | Yes |
+| `KAIROS_GITHUB_WEBHOOKS` | Integrations | GitHub webhook integration | Yes |
+| `KAIROS_PUSH_NOTIFICATION` | Notifications | Push notifications | Yes |
+| `MCP_RICH_OUTPUT` | MCP | Rich MCP tool output | Yes |
+| `MCP_SKILLS` | MCP | MCP tool skills integration | Yes |
+| `MESSAGE_ACTIONS` | UI | Message action buttons | Yes |
+| `NATIVE_CLIENT_ATTESTATION` | Security | Client attestation verification | Yes |
+| `NATIVE_CLIPBOARD_IMAGE` | UI | Native clipboard image support | No |
+| `PROACTIVE` | Agents | Autonomous execution | Yes |
+| `PROMPT_CACHE_BREAK_DETECTION` | Performance | Detect prompt cache breaks | Yes |
+| `REACTIVE_COMPACT` | Performance | Reactive context compaction | Yes |
+| `REVIEW_ARTIFACT` | Review | Artifact review | No |
+| `RUN_SKILL_GENERATOR` | Skills | Skill generation | No |
+| `SELF_HOSTED_RUNNER` | Infrastructure | Self-hosted runner | Yes |
+| `SSH_REMOTE` | Infrastructure | SSH remote execution | Yes |
+| `TRANSCRIPT_CLASSIFIER` | Permissions | Auto-mode permission classifier | Yes |
+| `ULTRAPLAN` | Planning | Ultra-detailed planning | Yes |
+| `ULTRATHINK` | Thinking | Extended thinking | Yes |
+| `UPLOAD_USER_SETTINGS` / `DOWNLOAD_USER_SETTINGS` | Settings | Cloud settings sync | Yes |
+| `VERIFICATION_AGENT` | Agents | Code verification agent | Yes |
+| `VOICE_MODE` | Input | Voice input/output | Yes |
+| `WEB_BROWSER_TOOL` | Tools | Browser automation | Yes |
+
+<Aside type="tip">
+The majority of flags are Ant-only. The few that ship in the public build (`AUTO_THEME`, `BUILDING_CLAUDE_APPS`, `NATIVE_CLIPBOARD_IMAGE`, `REVIEW_ARTIFACT`, `RUN_SKILL_GENERATOR`) tend to be UI polish or non-sensitive skill features.
+</Aside>
+
+## Key GrowthBook Runtime Flags
+
+GrowthBook flags (prefixed with `tengu_`) are evaluated **at runtime** by querying Anthropic's feature-flagging service. Even if the code path exists in your build, these flags can enable or disable features server-side based on your user account, organization, or A/B test cohort.
+
+| Flag Name | Purpose |
+|-----------|---------|
+| `tengu_amber_flint` | Agent swarms killswitch |
+| `tengu_amber_quartz_disabled` | Voice mode killswitch |
+| `tengu_amber_stoat` | Explore/Plan agents (default true) |
+| `tengu_ant_model_override` | Model override for Anthropic employees |
+| `tengu_auto_mode_config` | Auto-mode configuration (enabled / opt-in / disabled) |
+| `tengu_ccr_bridge_multi_session` | Multi-session bridge |
+| `tengu_hive_evidence` | Verification agent |
+| `tengu_harbor` | MCP channels/notifications |
+| `tengu_kairos_cron` | Scheduled agent execution |
+| `tengu_kairos_cron_durable` | Durable scheduled task state |
+| `tengu_malort_pedway` | Computer Use MCP configuration |
+| `tengu_max_version_config` | Version killswitch |
+| `tengu_onyx_plover` | Auto-dream configuration |
+| `tengu_otk_slot_v1` | One-time key slots |
+| `tengu_remote_backend` | Remote TUI backend |
+| `tengu_scratch` | Scratchpad durable storage |
+| `tengu_sedge_lantern` | Away summaries |
+| `tengu_session_memory` | Session-to-session memory |
+| `tengu_sessions_elevated_auth_enforcement` | Trusted device requirement |
+| `tengu_slim_subagent_claudemd` | Skip CLAUDE.md for read-only agents |
+| `tengu_surreal_dali` | Remote trigger tool |
+| `tengu_tool_pear` | Strict tool use |
+| `tengu_transcript_classifier` | Auto-mode classifier |
+| `tengu_willow_mode` | Context optimization (off / light / full) |
+
+<Aside type="note">
+The `tengu_` prefix appears to be a codename convention. "Tengu" is a creature from Japanese folklore -- a fitting mascot for a tool that watches and intervenes in your coding sessions.
+</Aside>
+
+## Key Environment Variables
+
+These environment variables can be set in your shell before launching Claude Code. Some are build-time gates, others are runtime toggles.
+
+| Variable | Purpose |
+|----------|---------|
+| `USER_TYPE=ant` | Build-time Anthropic employee gate |
+| `CLAUDE_CODE_COORDINATOR_MODE=1` | Enable coordinator mode |
+| `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` | Enable agent teams |
+| `CLAUDE_CODE_PROACTIVE=1` | Enable proactive mode |
+| `CLAUDE_CODE_UNDERCOVER=1` | Force undercover mode |
+| `CLAUDE_CODE_TEAMMATE_COMMAND=/path` | Custom teammate binary |
+| `CLAUDE_CODE_SIMPLE=1` | Simple mode for coordinator |
+| `CLAUDE_CODE_PLAN_MODE_REQUIRED=1` | Require plan mode |
+| `CLAUDE_INTERNAL_FC_OVERRIDES='{}' ` | Feature flag overrides (JSON) |
+| `CLAUDE_CODE_GB_BASE_URL=...` | GrowthBook override |
+| `CLAUDE_CODE_TERMINAL_RECORDING=1` | Terminal recording |
+| `MONOREPO_ROOT_DIR` | Anthropic monorepo detection |
+| `ALLOW_ANT_COMPUTER_USE_MCP` | Override computer use gate |
+
+<Aside type="caution">
+Setting `USER_TYPE=ant` as an environment variable at runtime will **not** change the build-time feature flags. The `USER_TYPE` check happens during the build/bundle step, not at runtime. You would need to rebuild from source with this value set.
+</Aside>
+
+## Ant-Only API Beta Headers
+
+These HTTP headers are sent to the Anthropic API to unlock server-side beta features. They are only included when running the internal (Ant) build.
+
+| Header Constant | Purpose |
+|----------------|---------|
+| `CLI_INTERNAL_BETA_HEADER` | Internal CLI beta access -- unlocks Ant-only API capabilities |
+| `SUMMARIZE_CONNECTOR_TEXT_BETA_HEADER` | Anti-distillation connector text processing |
+| `AFK_MODE_BETA_HEADER` | Away-from-keyboard mode -- signals the user is not actively watching |
+
+These headers are particularly important because even if you enable the client-side code paths, the **API server** will reject requests that include these headers unless your account is authorized. This is a server-side gate that cannot be bypassed by modifying the client.

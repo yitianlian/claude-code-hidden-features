@@ -1,0 +1,134 @@
+---
+title: "How to Enable Hidden Features"
+description: "Speculative analysis on enabling Claude Code's hidden features — to be continued."
+---
+
+:::danger[Disclaimer]
+All analysis on this site is based on a specific version of the Claude Code source at [instructkr/claude-code](https://github.com/instructkr/claude-code). Claude Code itself is **not** open-source. All intellectual property and credit belong to **Anthropic**. This is independent source code analysis, not official documentation, and is not affiliated with or endorsed by Anthropic in any way. Enabling hidden features may violate terms of service or cause unexpected behavior. Proceed at your own risk.
+:::
+
+## The Four Layers of Defense
+
+Based on our source code analysis, hidden features are protected by four layers of gating:
+
+| Layer | Mechanism | Bypassable? |
+|-------|-----------|-------------|
+| **Build-time** | `USER_TYPE === 'ant'` + `feature()` flags — code is physically stripped from public builds via dead-code elimination | Requires rebuilding from source |
+| **Runtime** | GrowthBook `tengu_*` flags — server-side checks against Anthropic's servers | Requires local override (`CLAUDE_INTERNAL_FC_OVERRIDES`) |
+| **Auth** | Anthropic OAuth tokens tied to employee accounts | Not bypassable |
+| **Infrastructure** | CCR, remote triggers, push notifications depend on Anthropic's internal backend | Not bypassable |
+
+## Environment Variables Worth Noting
+
+Some features are partially gated by environment variables:
+
+```bash
+CLAUDE_CODE_COORDINATOR_MODE=1          # Coordinator mode
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1  # Agent teams (+ --agent-teams flag)
+CLAUDE_CODE_PROACTIVE=1                 # Proactive mode
+CLAUDE_INTERNAL_FC_OVERRIDES='{...}'    # GrowthBook flag overrides (JSON)
+```
+
+:::caution[Important]
+These env vars only work if the corresponding code paths exist in your build. In the public build, most feature code has been tree-shaken away — the env vars have nothing to activate.
+:::
+
+## Quick Feasibility Assessment
+
+| Feature | Feasibility | Reason |
+|---------|-------------|--------|
+| Coordinator Mode | Speculative — may partially work | Most self-contained; env var + source rebuild |
+| Agent Teams | Speculative — may partially work | Env var + CLI flag + source rebuild |
+| Auto Permission Mode | Speculative — may partially work | Client-side classifier |
+| Kairos (local tasks) | Speculative — partial | Local daemon works, but no push/webhooks |
+| Voice Mode | Unlikely | May depend on server-side audio pipeline |
+| CCR / Remote Triggers | Not possible | Requires Anthropic's backend infrastructure |
+| Bridge / SSH Remote | Not possible | Requires Anthropic's remote backend |
+
+## Speculative Approach: Building from Source
+
+:::caution[Speculation]
+The following is our best guess based on reading the build system. We have NOT verified these steps. They may be incomplete, outdated, or simply wrong.
+:::
+
+Based on the source code structure, a theoretical approach might look like:
+
+```bash
+# 1. Clone the source
+git clone https://github.com/instructkr/claude-code
+cd claude-code
+
+# 2. Install Bun (the runtime/bundler used by Claude Code)
+curl -fsSL https://bun.sh/install | bash
+
+# 3. Install dependencies
+bun install
+```
+
+The key file to look for is the **build configuration** — likely a `build.ts`, `bundle.ts`, or a section in `package.json` scripts. Somewhere in the build pipeline, there should be `--define` flags like:
+
+```typescript
+// Hypothetical build config (speculative)
+Bun.build({
+  define: {
+    'process.env.USER_TYPE': JSON.stringify('ant'),  // Change 'external' to 'ant'
+    // feature() flags are likely defined here too
+  },
+})
+```
+
+You would need to:
+
+1. **Find** the build entry point that sets `USER_TYPE` and the `feature()` defines
+2. **Change** `USER_TYPE` from its default (likely `'external'`) to `'ant'`
+3. **Enable** specific feature flags: `COORDINATOR_MODE: true`, `KAIROS: true`, etc.
+4. **Rebuild** with `bun build` or whatever the project's build script is
+5. **Replace** your installed Claude Code binary with the custom build
+
+### The GrowthBook Problem
+
+Even with a custom build, runtime `tengu_*` flags query Anthropic's GrowthBook server. The override env var might help:
+
+```bash
+# Override specific GrowthBook flags locally
+export CLAUDE_INTERNAL_FC_OVERRIDES='{
+  "tengu_amber_flint": true,
+  "tengu_kairos_cron": true,
+  "tengu_onyx_plover": { "enabled": true, "minHours": 24, "minSessions": 5 },
+  "tengu_scratch": true,
+  "tengu_auto_mode_config": { "enabled": "enabled" }
+}'
+```
+
+But this only works if:
+- The `CLAUDE_INTERNAL_FC_OVERRIDES` code path exists in your build (it's behind `USER_TYPE === 'ant'`)
+- The feature code itself wasn't tree-shaken away
+
+### The Most Promising Targets
+
+If we had to guess which features are most likely to work with a source rebuild:
+
+1. **Coordinator Mode** — self-contained, env var activated, no backend dependency
+2. **Agent Teams** — env var + CLI flag, uses local tmux/iTerm
+3. **Auto Dream** — local file-based, forked subagent runs locally
+4. **Auto Permission Mode** — client-side classifier, no server dependency
+5. **Scratchpad** — just a directory with permission bypass, trivial
+
+### What Definitely Won't Work
+
+No amount of source hacking can replicate:
+- **CCR cloud environments** — Anthropic's private cloud infrastructure
+- **Remote triggers API** (`/v1/code/triggers`) — Anthropic's backend
+- **Push notifications** — Anthropic's notification service
+- **Bridge remote sessions** — Anthropic's environments API
+- **Features behind API beta headers** — server-side rejection
+
+## To Be Continued...
+
+We're continuing to explore the build system and will update this page with verified steps if we find a reliable approach. In the meantime, the real value is in understanding **how these features are designed** — these architectural patterns (coordinator/worker, cache-safe forking, background memory consolidation, intelligent permission classification) can inspire your own AI tooling.
+
+---
+
+:::note[Source]
+All analysis is based on: [github.com/instructkr/claude-code](https://github.com/instructkr/claude-code)
+:::

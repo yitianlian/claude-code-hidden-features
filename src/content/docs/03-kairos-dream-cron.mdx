@@ -1,0 +1,187 @@
+---
+title: "KAIROS: The Autonomous Agent System Hidden Inside Claude Code"
+description: "Background tasks, autonomous memory consolidation, scheduled agents, and proactive execution."
+---
+
+:::note[Disclaimer]
+All analysis is based on a specific version of the Claude Code source at [instructkr/claude-code](https://github.com/instructkr/claude-code). Claude Code is **not** open-source — all intellectual property belongs to **Anthropic**. This is independent source code analysis only.
+:::
+
+Claude Code contains an entire autonomous agent operating system called **KAIROS** that most users will never see. When enabled, it transforms Claude Code from a reactive assistant into a proactive, always-on agent capable of background work, scheduled tasks, push notifications, and self-directed memory consolidation.
+
+## The KAIROS System
+
+:::note[Feature Gate]
+Gated by `feature('KAIROS')`. This is the mega-flag that enables Claude Code's "assistant mode" -- a fundamentally different operating mode from the standard interactive CLI.
+:::
+
+KAIROS is not a single feature but an umbrella system with multiple sub-features, each behind its own flag:
+
+| Sub-Feature | Flag | Purpose |
+|---|---|---|
+| **Channels** | `feature('KAIROS_CHANNELS')` | MCP channel subscriptions for notifications |
+| **GitHub Webhooks** | `feature('KAIROS_GITHUB_WEBHOOKS')` | Subscribe to GitHub webhook events |
+| **Push Notifications** | `feature('KAIROS_PUSH_NOTIFICATION')` | Push notifications to user devices |
+| **Brief Mode** | `feature('KAIROS_BRIEF')` | Streamlined chat UI with checkpoints and a 5-minute refresh cycle |
+
+### Tools Unlocked by KAIROS
+
+When the KAIROS flag is active, the following tools become available in the tool registry:
+
+- **SleepTool** -- pause execution for a specified duration (used for polling and scheduling)
+- **SendUserFileTool** -- send files directly to the user's device
+- **PushNotificationTool** -- deliver push notifications outside the terminal
+- **SubscribePRTool** -- subscribe to pull request events and get notified of changes
+- **BriefTool** -- generate progress summaries with checkpoints
+
+### Environment Variable
+
+```
+CLAUDE_CODE_PROACTIVE=1
+```
+
+Setting this env var enables **proactive mode** under the KAIROS umbrella, allowing Claude to take initiative without waiting for user prompts.
+
+---
+
+## Proactive Mode
+
+:::note[Feature Gate]
+Gated by `feature('PROACTIVE')`. Requires KAIROS to be active.
+:::
+
+Proactive Mode is where KAIROS gets interesting. Instead of waiting for user input, Claude autonomously:
+
+1. **Generates tasks** -- identifies work that needs doing based on context
+2. **Executes tasks** -- carries them out without explicit user instructions
+3. **Reports progress** -- uses the Brief tool to deliver structured progress updates
+4. **Speculates on next steps** -- pre-computes likely follow-up actions ("speculation") to reduce latency
+
+This turns Claude Code into something closer to a background teammate than a command-line tool.
+
+---
+
+## Auto Dream: Background Memory Consolidation
+
+:::caution[Ant-Only]
+Gated by `feature('KAIROS_DREAM')` plus the GrowthBook flag `tengu_onyx_plover`. This is an internal-only feature.
+:::
+
+Auto Dream is an autonomous memory consolidation system that runs in the background. Every 24 hours (configurable), if at least 5 new sessions have accumulated, Claude spawns a **forked subagent** that:
+
+1. Reviews past session transcripts
+2. Extracts patterns, preferences, and recurring context
+3. Writes consolidated memories to the auto-memory directory
+
+### Gate Cascade
+
+The Dream system uses a multi-stage gate to prevent unnecessary or concurrent runs:
+
+```
+Feature Flag Gate
+    |
+    v
+Time Gate (24h since last run)
+    |
+    v
+Session Gate (>= 5 new sessions)
+    |
+    v
+Lock Gate (file-based lock prevents concurrent consolidations)
+    |
+    v
+Dream Subagent Spawned
+```
+
+### Tool Constraints
+
+The Dream subagent operates in a restricted sandbox. It can only execute **read-only Bash commands**:
+
+- `ls`, `find`, `grep`, `cat`, `stat`, `wc`, `head`, `tail`
+
+No writes, no git operations, no network calls. This ensures the consolidation process cannot accidentally modify your codebase.
+
+### Telemetry Events
+
+| Event | Meaning |
+|---|---|
+| `tengu_auto_dream_fired` | Dream consolidation was triggered |
+| `tengu_auto_dream_completed` | Consolidation finished successfully |
+| `tengu_auto_dream_failed` | Consolidation encountered an error |
+
+---
+
+## Cron Scheduled Agents
+
+:::caution[Ant-Only]
+Gated by `feature('AGENT_TRIGGERS')` plus the GrowthBook flag `tengu_kairos_cron`.
+:::
+
+The Cron system lets you schedule Claude Code agents to run on standard cron expressions -- turning Claude into a schedulable background worker.
+
+### CronCreate Tool
+
+Schedule a prompt to execute on a 5-field cron expression:
+
+- **Recurring or one-shot** -- set a cron pattern or a single future time
+- **Durable** -- schedules persist to `.claude/scheduled_tasks.json` and survive restarts
+- **Max concurrency** -- up to 50 concurrent scheduled tasks
+- **Auto-expiry** -- tasks expire after 7 days by default
+
+### Management Tools
+
+- **CronList** -- view all scheduled tasks and their next run times
+- **CronDelete** -- remove a scheduled task by ID
+
+---
+
+## Remote Triggers
+
+:::caution[Ant-Only]
+Gated by `feature('AGENT_TRIGGERS_REMOTE')` plus the GrowthBook flag `tengu_surreal_dali`.
+:::
+
+Remote Triggers extend the scheduling system beyond local cron into Anthropic's cloud infrastructure via the **RemoteTriggerTool**.
+
+### Operations
+
+| Operation | Description |
+|---|---|
+| `create` | Register a new remote trigger |
+| `list` | List all active triggers |
+| `get` | Fetch details of a specific trigger |
+| `update` | Modify an existing trigger |
+| `run` | Manually execute a trigger |
+
+### API Endpoints
+
+Remote triggers communicate with Anthropic's backend:
+
+```
+POST   /v1/code/triggers
+GET    /v1/code/triggers
+GET    /v1/code/triggers/:id
+PATCH  /v1/code/triggers/:id
+POST   /v1/code/triggers/:id/run
+```
+
+:::note[Feature Gate]
+Requires the beta header: `anthropic-beta: ccr-triggers-2026-01-30`
+:::
+
+---
+
+## Task System Overview
+
+Under the hood, KAIROS orchestrates work through a typed task system. Each task type serves a different execution context:
+
+| Task Type | Description |
+|---|---|
+| **DreamTask** | Background memory consolidation (Auto Dream) |
+| **LocalAgentTask** | Locally spawned agent running in a subprocess |
+| **RemoteAgentTask** | Agent running on Anthropic's cloud infrastructure |
+| **InProcessTeammateTask** | Agent running in the same process as the main session |
+| **LocalShellTask** | Raw shell command execution |
+| **MonitorMcpTask** | Long-running MCP server monitoring task |
+
+This task abstraction allows KAIROS to uniformly manage, schedule, cancel, and report on work regardless of where or how it executes.

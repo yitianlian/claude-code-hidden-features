@@ -1,0 +1,19 @@
+{
+  "name": "claude-code-hidden-features",
+  "version": "1.0.0",
+  "description": "Analyzing Claude Code's hidden features that only Anthropic employees can use",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/mdx": "^5.0.3",
+    "@astrojs/starlight": "^0.38.2",
+    "astro": "^6.1.2",
+    "sharp": "^0.34.5"
+  },
+  "packageManager": "pnpm@10.30.3"
+}

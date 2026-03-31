@@ -1,0 +1,329 @@
+---
+title: "协调者模式：隐藏的多智能体乐团"
+description: "多工作者编排、Fork 子代理与共享内存的智能体集群。"
+---
+
+:::note[免责声明]
+本文所有分析均基于某个版本的 Claude Code 源码 [instructkr/claude-code](https://github.com/instructkr/claude-code)。Claude Code **并非**开源项目，所有知识产权归 **Anthropic** 所有。本文仅为独立的源代码分析。
+:::
+
+Claude Code 中最复杂的隐藏功能不是单一能力 -- 而是一套完整的多智能体编排系统。三个各自独立但相互关联的系统让 Claude Code 能够将工作拆分给多个智能体，这些智能体可以相互通信、共享内存，并通过中心领导者进行协调。
+
+三个系统全部被门控。公开构建中一个都没有。
+
+---
+
+## 1. 协调者模式 (Coordinator Mode)
+
+:::note[功能门控]
+门控方式：`feature('COORDINATOR_MODE')` + `CLAUDE_CODE_COORDINATOR_MODE=1`
+:::
+
+协调者模式将 Claude Code 从单智能体工具转变为 **多工作者编排系统**。一个协调者智能体管理高层计划，而工作者智能体并行执行各项具体任务。
+
+### 核心规则
+
+协调者 **绝不直接执行任务**。它只负责委派和综合。来自 `coordinatorMode.ts` 中嵌入的系统提示 (约 370 行)：
+
+```
+You are a coordinator agent. You MUST NOT use tools directly to accomplish tasks.
+Instead, you delegate ALL work to worker agents using the AgentTool.
+Your role is to:
+1. Understand the request
+2. Break it into independent subtasks
+3. Dispatch workers in parallel where possible
+4. Synthesize results into a coherent response
+```
+
+### 通信协议
+
+工作者通过结构化的 XML 块向协调者报告：
+
+```xml
+<task-notification>
+  <task-id>worker-3-refactor-auth</task-id>
+  <status>completed</status>
+  <summary>Refactored auth module to use OAuth2 PKCE flow</summary>
+  <result>
+    Modified 4 files:
+    - src/auth/provider.ts (new OAuth2 client)
+    - src/auth/callback.ts (PKCE verifier)
+    - src/auth/types.ts (new token types)
+    - src/auth/index.ts (updated exports)
+    All tests passing.
+  </result>
+  <usage>
+    <input-tokens>45000</input-tokens>
+    <output-tokens>12000</output-tokens>
+  </usage>
+</task-notification>
+```
+
+每个通知包含唯一的 `<task-id>`、执行 `<status>`、人类可读的 `<summary>`、详细的 `<result>` 以及用于成本追踪的 token `<usage>`。
+
+### 工作流阶段
+
+协调者遵循严格的四阶段工作流：
+
+**第一阶段：调研 (并行)**
+工作者被并行派遣去收集信息。协调者可能同时生成 3-5 个工作者，分别阅读代码库的不同部分、搜索模式或分析依赖关系。
+
+```typescript
+// Coordinator dispatches research workers in parallel
+await Promise.all([
+  spawnWorker('research-1', 'Read all files in src/auth/ and summarize the auth flow'),
+  spawnWorker('research-2', 'Find all usages of AuthProvider across the codebase'),
+  spawnWorker('research-3', 'Read the test files in tests/auth/ and list what is covered'),
+])
+```
+
+**第二阶段：综合 (仅协调者)**
+协调者处理所有调研结果并制定实施计划。这一阶段不涉及工作者 -- 协调者利用其完整上下文来做架构决策。
+
+**第三阶段：实施 (工作者)**
+工作者执行计划。每个工作者处理一个独立的子任务。协调者确保任务之间真正独立，以避免合并冲突。
+
+**第四阶段：验证 (独立工作者)**
+新的工作者 -- 而非编写代码的那些工作者 -- 来验证实施结果。这避免了"自己检查自己作业"的问题。
+
+### 工具访问权限
+
+协调者和工作者拥有不同的工具集：
+
+| 角色 | 可用工具 |
+|---|---|
+| **协调者** | `AgentTool`、`TaskStopTool`、`SendMessageTool` |
+| **工作者** | `Bash`、`Read`、`Edit`、`Write`、`Grep`、`Glob` 以及所有标准工具 |
+
+协调者无法读取文件、运行命令或编辑代码。它只能与工作者对话并管理任务生命周期。
+
+### Scratchpad 存储
+
+:::note[功能门控]
+门控方式：`tengu_scratch` (GrowthBook 运行时标志)
+:::
+
+当 Scratchpad 启用后，协调者会话中的所有智能体共享一个持久化存储目录。工作者可以将中间结果写入 Scratchpad，其他工作者（或协调者）可以读取：
+
+```typescript
+// Worker 1 writes research results
+await writeToScratchpad('auth-analysis.md', analysisContent)
+
+// Worker 2 reads them as context for implementation
+const analysis = await readFromScratchpad('auth-analysis.md')
+```
+
+这使得复杂的多步骤工作流成为可能，后续工作者可以基于先前工作者的发现进行工作，而无需协调者通过对话上下文中转所有信息。
+
+---
+
+## 2. Fork 子代理 (Fork Subagent)
+
+:::note[功能门控]
+门控方式：`feature('FORK_SUBAGENT')`
+:::
+
+Fork 子代理是协调者模式的轻量级替代方案，专为具有 **Prompt 缓存优化** 的单父-单子委派场景设计。
+
+### 缓存优化
+
+核心创新在于子代理共享父代理的 Prompt 缓存。子代理的 API 请求以与父对话字节相同的前缀开头，这意味着父上下文中缓存的 KV 对会被复用：
+
+```typescript
+// The child inherits the parent's full conversation history + system prompt
+// This means the first ~90% of the child's prompt is already cached
+const child = forkSubagent({
+  parentConversation: currentConversation,
+  directive: 'Refactor the auth module to use PKCE',
+  inheritSystemPrompt: true,
+})
+```
+
+这显著降低了子代理首次响应的延迟和成本，因为大部分输入 token 都是缓存命中。
+
+### 指令模式
+
+父代理不需要单独传递背景上下文，只发送一个指令 -- 说明做什么，而不是为什么做或代码库是什么样的。子代理已经从继承的对话中获得了完整上下文：
+
+```typescript
+const result = await child.execute({
+  directive: 'Refactor the auth module to use PKCE',
+  // No need to explain the codebase - child already knows
+})
+```
+
+### 权限冒泡 (Permission Bubbling)
+
+当子代理需要执行敏感操作（如运行 Shell 命令）时，它使用 `bubble` 权限模式，将权限提示传递到父代理的终端：
+
+```typescript
+const child = forkSubagent({
+  permissionMode: 'bubble', // Prompts appear in parent terminal
+  // ...
+})
+```
+
+这意味着用户不需要同时监控多个终端。所有审批请求都出现在同一个地方。
+
+### 子代理规则
+
+系统提示为 Fork 出的子代理制定了严格的规则：
+
+1. **不要 Fork 子代理** -- 不允许递归 Fork
+2. **不要对话** -- 完成任务后返回，不进行来回交流
+3. **报告前先提交** -- 如果做了更改，返回前先提交 (commit)
+4. **报告不超过 500 字** -- 只返回简洁的结果
+5. **以 "Scope:" 开头** -- 每份报告都以范围声明开始
+
+```
+Scope: Refactored src/auth/ to use PKCE flow.
+
+Changes:
+- Replaced implicit grant with authorization code + PKCE
+- Added code_verifier generation in auth/crypto.ts
+- Updated callback handler to exchange code with verifier
+- All 12 existing tests updated and passing
+- Added 3 new tests for PKCE-specific flows
+
+Commit: a1b2c3d "refactor: migrate auth to OAuth2 PKCE flow"
+```
+
+---
+
+## 3. 智能体集群 (Agent Swarms)
+
+:::caution[仅限 Anthropic 内部]
+门控方式：`tengu_amber_flint` (GrowthBook 运行时标志) + `--agent-teams` CLI 标志。此功能同时需要来自 Anthropic 服务器的运行时标志和仅存在于内部构建中的 CLI 标志。
+:::
+
+智能体集群是最宏大的多智能体系统。协调者模式在单个进程内运行智能体，而智能体集群则跨终端面板生成 **真正独立的 Claude Code 实例**。
+
+### 架构：领导者-队友模型
+
+```
+┌─────────────────────────────────────────────────┐
+│  Terminal                                        │
+│  ┌──────────────┐  ┌──────────────┐             │
+│  │   Leader      │  │  Teammate 1  │             │
+│  │   (main)      │  │  (tmux pane) │             │
+│  │              │  │              │             │
+│  │  Orchestrates │  │  Executes    │             │
+│  │  the plan     │  │  subtask A   │             │
+│  ├──────────────┤  ├──────────────┤             │
+│  │  Teammate 2  │  │  Teammate 3  │             │
+│  │  (tmux pane) │  │  (tmux pane) │             │
+│  │              │  │              │             │
+│  │  Executes    │  │  Executes    │             │
+│  │  subtask B   │  │  subtask C   │             │
+│  └──────────────┘  └──────────────┘             │
+└─────────────────────────────────────────────────┘
+```
+
+领导者在主终端会话中运行。队友作为独立进程在新的 tmux 或 iTerm 面板中生成。
+
+### 后端
+
+三种后端控制队友进程的生成方式：
+
+```typescript
+type SwarmBackend = 'tmux' | 'iterm' | 'in-process'
+```
+
+| 后端 | 工作方式 |
+|---|---|
+| **TmuxBackend** | 通过 `tmux split-window` 在新的 tmux 面板中生成队友 |
+| **ITermBackend** | 使用 iTerm2 的 AppleScript API 创建新面板 |
+| **InProcessBackend** | 以子进程方式运行队友（无可见面板，用于 CI/测试） |
+
+### 权限同步
+
+`leaderPermissionBridge` 确保领导者做出的权限决策传播到所有队友：
+
+```typescript
+// When the leader approves "allow Bash commands in src/"
+// All teammates automatically inherit that permission
+const bridge = createLeaderPermissionBridge({
+  leader: leaderSession,
+  teammates: [teammate1, teammate2, teammate3],
+})
+
+bridge.onPermissionGranted((permission) => {
+  // Propagate to all teammates
+  teammates.forEach(t => t.grantPermission(permission))
+})
+```
+
+这避免了用户被每个队友发出的相同权限提示轰炸。在领导者上批准一次，所有队友即可继续工作。
+
+### 团队记忆同步
+
+`src/services/teamMemorySync/` 模块为集群中的所有智能体提供共享上下文：
+
+```typescript
+// Teammate 1 discovers something important
+await teamMemory.write({
+  key: 'auth-module-pattern',
+  value: 'This codebase uses a custom DI container in src/di/',
+  scope: 'team', // Visible to all teammates
+})
+
+// Teammate 2 reads it before starting work
+const insights = await teamMemory.readAll({ scope: 'team' })
+// Now teammate 2 knows about the DI container without re-discovering it
+```
+
+这避免了多个队友独立发现代码库中相同信息的冗余工作。
+
+### 配置传播
+
+当领导者生成队友时，它会转发完整的配置：
+
+```typescript
+const teammateConfig = {
+  model: leaderConfig.model,           // Same model
+  permissionMode: leaderConfig.permissionMode, // Same permission level
+  plugins: leaderConfig.plugins,       // Same MCP plugins
+  settings: leaderConfig.settings,     // Same user settings
+  // Plus swarm-specific overrides:
+  CLAUDE_CODE_TEAMMATE_COMMAND: taskDirective,
+  CLAUDE_CODE_AGENT_COLOR: assignedColor,
+  CLAUDE_CODE_PLAN_MODE_REQUIRED: 'true',
+}
+```
+
+:::note[环境变量]
+关键的集群环境变量：
+- `CLAUDE_CODE_TEAMMATE_COMMAND` -- 该队友的任务指令
+- `CLAUDE_CODE_AGENT_COLOR` -- 终端 UI 中的视觉标识
+- `CLAUDE_CODE_PLAN_MODE_REQUIRED` -- 强制队友在执行前先制定计划
+:::
+
+### 计划模式强制
+
+队友以 `CLAUDE_CODE_PLAN_MODE_REQUIRED=true` 运行，这意味着它们必须先输出计划并获得批准，然后才能执行任何工具。这给了领导者（和用户）在每个队友开始修改之前审查其意图的机会。
+
+---
+
+## 三个系统的关系
+
+三个多智能体系统形成了一个复杂度递增的层次结构：
+
+| 系统 | 智能体数量 | 进程模型 | 最适合场景 |
+|---|---|---|---|
+| **Fork 子代理** | 1 父 + 1 子 | 进程内 | 带缓存复用的快速委派 |
+| **协调者模式** | 1 协调者 + N 工作者 | 进程内 | 结构化的多阶段工作流 |
+| **智能体集群** | 1 领导者 + N 队友 | 多进程 (tmux/iTerm) | 大规模并行执行 |
+
+Fork 子代理最轻量 -- 一个父代理将一个任务委派给一个子代理。协调者模式更结构化 -- 一个专门的协调者通过定义的阶段管理多个工作者。智能体集群最重量级 -- 真正独立的进程，拥有各自的终端、共享内存和权限同步。
+
+:::caution[以上功能均不对外发布]
+所有三个系统都被构建期特性标志或运行时 GrowthBook 标志所门控。公开的 Claude Code 二进制文件中不包含这些代码。这些功能仅存在于 Anthropic 的内部构建中，即便在内部，运行时标志也可以远程将其禁用。
+:::
+
+---
+
+## 这意味着什么
+
+Anthropic 已经在 Claude Code 之上构建了 -- 并在内部积极使用着 -- 一套成熟的多智能体编排系统。它已经如此完善（具备权限桥接、记忆同步、多后端支持和结构化通信协议），这表明它在内部已经使用了相当长的时间。
+
+这些功能最终是否会向外部用户开放尚不可知。但基础设施已经建好、测试完毕，并被置于一键可切换的特性标志之后。开启它们只是一个配置变更，而非开发工作。
