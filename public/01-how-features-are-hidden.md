@@ -1,0 +1,232 @@
+> **Disclaimer**
+> All analysis is based on a specific version of the Claude Code source at [instructkr/claude-code](https://github.com/instructkr/claude-code). Claude Code is **not** open-source — all intellectual property belongs to **Anthropic**. This is independent source code analysis only.
+
+
+A version of Anthropic's Claude Code source code is available at [instructkr/claude-code](https://github.com/instructkr/claude-code). You can read every file. But reading the code and *running* the code are two different things. The public build you install via `npm` is missing entire feature systems — not because they are in a private repo, but because they are **compiled out** at build time.
+
+This article breaks down the three-layer gating system that makes this possible.
+
+---
+
+## Layer 1: Build-Time Gates
+
+The first and most effective layer operates at compile time. Features gated here do not exist at all in public builds.
+
+### The `USER_TYPE` Flag
+
+The most pervasive gate is a simple environment variable check:
+
+```typescript
+if (process.env.USER_TYPE === 'ant') {
+  // This entire block is removed in public builds
+  enableInternalFeature()
+}
+```
+
+This appears **291+ times across 143+ files** in the codebase. During the build process, Bun's bundler is invoked with a `--define` flag:
+
+```bash
+# Internal build
+bun build --define process.env.USER_TYPE="'ant'" src/index.ts
+
+# Public build
+bun build --define process.env.USER_TYPE="'external'" src/index.ts
+```
+
+When the bundler sees `process.env.USER_TYPE === 'ant'` and knows the value is `'external'`, it evaluates the condition to `false` at compile time. The entire `if` block — including any imports it triggers — is eliminated as dead code.
+
+> **Why This Is Effective**
+> Dead code elimination is not just about hiding features. It also reduces bundle size. You cannot patch the binary to enable these features because the code simply is not there.
+
+
+### The `feature()` Function
+
+The second build-time mechanism uses Bun's bundle-time macro system:
+
+```typescript
+import { feature } from 'bun:bundle'
+
+if (feature('KAIROS')) {
+  const { registerKairos } = require('./assistant/index.js')
+  registerKairos()
+}
+```
+
+There are **89 compile-time feature flags** using this pattern. During an internal build, `feature('KAIROS')` evaluates to `true` and the code is included. During a public build, it evaluates to `false` and the bundler strips the block entirely.
+
+Here is a representative sample of the flags we identified:
+
+| Flag | Purpose |
+|---|---|
+| `COORDINATOR_MODE` | Multi-agent coordinator orchestration |
+| `FORK_SUBAGENT` | Cache-optimized child agent spawning |
+| `KAIROS` | Scheduled/cron-based agent execution |
+| `HEARTH` | Persistent background services |
+| `MCP_AUTH` | OAuth for MCP server connections |
+| `NOTEBOOK` | Jupyter notebook support |
+| `GITHUB_PR` | Deep GitHub PR integration |
+| `INTEROP` | Cross-tool integration protocol |
+
+The pattern is consistent. A `feature()` call wraps a dynamic `require()`, so the entire module tree behind the flag is also eliminated:
+
+```typescript
+// This pattern ensures the ENTIRE module graph is removed
+if (feature('COORDINATOR_MODE')) {
+  const { CoordinatorMode } = require('./coordinator/coordinatorMode.js')
+  const { registerCoordinatorTools } = require('./coordinator/tools.js')
+  // ... all coordinator code, including sub-dependencies
+}
+```
+
+> **Cannot Be Re-Enabled**
+> Unlike runtime flags, build-time gates cannot be bypassed by setting environment variables or patching configuration files. The code paths are physically absent from the compiled output. You would need to rebuild from source with the internal flag set — and even then, Layer 2 would block you.
+
+
+### Conditional Imports and Registration
+
+Many features use a registration pattern where build-time gates control whether an entire subsystem is registered:
+
+```typescript
+// In the tool registration file
+const tools: Tool[] = [
+  BashTool,
+  ReadTool,
+  EditTool,
+  // ... public tools
+]
+
+if (process.env.USER_TYPE === 'ant') {
+  const { CoordinatorTool } = require('./tools/coordinator.js')
+  const { SwarmTool } = require('./tools/swarm.js')
+  tools.push(CoordinatorTool, SwarmTool)
+}
+```
+
+This means internal builds have a strictly larger tool set, additional system prompt sections, and more CLI flags than public builds.
+
+---
+
+## Layer 2: Runtime Gates (GrowthBook)
+
+Even if code survives the build process, a second layer of server-side feature flags controls what actually executes.
+
+### The `tengu_*` Flag System
+
+Anthropic uses [GrowthBook](https://www.growthbook.io/) for runtime feature flagging. The codebase contains references to **500+ feature flags**, all prefixed with `tengu_`:
+
+```typescript
+const isSwarmEnabled = await getFeatureValue_CACHED_WITH_REFRESH(
+  'tengu_amber_flint',
+  false
+)
+if (!isSwarmEnabled) {
+  return // Swarms disabled for this user
+}
+```
+
+The access functions reveal a caching strategy designed for CLI performance:
+
+| Function | Behavior |
+|---|---|
+| `getFeatureValue_CACHED_MAY_BE_STALE()` | Returns cached value immediately, may be outdated |
+| `getFeatureValue_CACHED_WITH_REFRESH()` | Returns cached value but triggers background refresh |
+
+Key runtime flags we identified:
+
+| Flag | Controls |
+|---|---|
+| `tengu_amber_flint` | Agent swarms killswitch |
+| `tengu_kairos_cron` | Kairos scheduled execution |
+| `tengu_onyx_plover` | Auto dream / memory consolidation |
+| `tengu_scratch` | Scratchpad cross-worker storage |
+| `tengu_hearth_daemon` | Background service persistence |
+
+### Internal Overrides
+
+Anthropic developers can override any runtime flag locally using an environment variable:
+
+```bash
+export CLAUDE_INTERNAL_FC_OVERRIDES='{"tengu_amber_flint": true, "tengu_kairos_cron": true}'
+```
+
+This JSON object is parsed at startup and overrides the GrowthBook responses. It is only functional when combined with internal authentication (Layer 3), so setting this variable as an external user has no effect.
+
+> **Server-Side Enforcement**
+> GrowthBook flags are evaluated server-side based on your authentication context. Even if you decompile the client and patch flag checks, the server will not serve the flag values needed to enable features. The client asks "is `tengu_amber_flint` enabled for me?" and the server says "no."
+
+
+---
+
+## Layer 3: Auth and Context Gates
+
+The final layer uses authentication state and environmental context to gate features.
+
+### Anthropic OAuth
+
+```typescript
+if (isAnthropicAuthEnabled()) {
+  // Features only available when authenticated via Anthropic's internal OAuth
+  registerInternalDashboard()
+}
+```
+
+The `isAnthropicAuthEnabled()` function checks for an Anthropic-specific OAuth token that is only obtainable through Anthropic's internal identity provider. This is not the same as a Claude API key — it is a corporate SSO credential.
+
+### Subscription Tier Checks
+
+```typescript
+const tier = await getSubscriptionType()
+// Returns: 'max' | 'pro' | 'plus' | 'basic'
+
+if (tier === 'max') {
+  enableMaxFeatures()
+}
+```
+
+Some features are gated by subscription tier rather than employee status. The `max` tier, which is the highest, unlocks capabilities that `pro` and `plus` do not have access to.
+
+### Monorepo Detection
+
+```typescript
+if (process.env.MONOREPO_ROOT_DIR) {
+  // Running inside Anthropic's internal monorepo
+  // Enable deep integration with internal tooling
+  const { loadInternalConfig } = require('./internal/config.js')
+  loadInternalConfig(process.env.MONOREPO_ROOT_DIR)
+}
+```
+
+When Claude Code detects it is running inside Anthropic's internal monorepo (via the `MONOREPO_ROOT_DIR` environment variable), it unlocks integration with internal development tools, custom linters, and proprietary workflows.
+
+### MDM Policies
+
+```typescript
+const mdmPolicy = await getMDMPolicy()
+if (mdmPolicy?.enableAdvancedFeatures) {
+  // Enterprise MDM-controlled feature gates
+}
+```
+
+Enterprise customers can control Claude Code features via Mobile Device Management policies, adding another layer of organizational feature control.
+
+---
+
+## The Numbers
+
+To summarize the scale of the gating system:
+
+| Layer | Mechanism | Count |
+|---|---|---|
+| Build-time | `process.env.USER_TYPE === 'ant'` checks | **291+** locations in **143+** files |
+| Build-time | `feature()` compile-time flags | **89** distinct flags |
+| Runtime | `tengu_*` GrowthBook flags | **500+** server-side flags |
+| Auth | OAuth + subscription + MDM gates | Multiple independent checks |
+| **Total** | **Major hidden feature systems** | **24+** |
+
+The result is a codebase where roughly 30-40% of the implemented functionality is invisible to external users — not hidden behind a settings toggle, but physically absent from the distributed binary. The source code is a window into what Anthropic is building, but the product you install is a carefully curated subset.
+
+---
+
+> **Next Up**
+> Now that you understand how features are hidden, let's look at the most impressive one: [Coordinator Mode and Agent Swarms](/claude-code-hidden-features/02-coordinator-swarms/).
+

@@ -1,0 +1,198 @@
+> **免责声明**
+> 本文所有分析均基于某个版本的 Claude Code 源码 [instructkr/claude-code](https://github.com/instructkr/claude-code)。Claude Code **并非**开源项目，所有知识产权归 **Anthropic** 所有。本文仅为独立的源代码分析。
+
+
+在核心 CLI 体验之外，Claude Code 还包含了多个已完整构建但尚未发布的系统，涵盖语音交互、浏览器自动化、远程执行、云计算和深度 IDE 集成。这些功能代表了 Claude Code 的下一代能力。
+
+## 语音模式 (Voice Mode)
+
+> **功能门控**
+> 三重门控：`feature('VOICE_MODE') && isVoiceGrowthBookEnabled() && isAnthropicAuthEnabled()`。GrowthBook 标志 `tengu_amber_quartz_disabled` 作为紧急关闭开关。
+
+
+语音模式为 Claude Code 添加了实时语音输入，将终端变成一个语音驱动的编程助手。
+
+### 工作原理
+
+- **实时语音转文字流式传输**，通过 `voiceStreamSTT.ts` 实现 -- 语音在你说话的同时被转录，而非等你说完
+- **按键说话 (Push-to-talk)** 激活方式，绑定到**空格键**
+- **关键术语增强**，通过 `voiceKeyterms.ts` 实现 -- 技术词汇（API 名称、编程语言关键字、框架术语）在转录中获得优先权，以减少开发者术语的识别错误
+
+### 门控结构
+
+以下三个条件必须同时为真：
+
+1. `feature('VOICE_MODE')` 特性标志已启用
+2. `isVoiceGrowthBookEnabled()` 返回 true（GrowthBook 远程配置）
+3. `isAnthropicAuthEnabled()` 确认 Anthropic 认证处于活跃状态
+
+紧急关闭开关 `tengu_amber_quartz_disabled` 可以在无需部署代码的情况下远程关闭语音模式。
+
+---
+
+## 网页浏览器工具 (Web Browser Tool)
+
+> **功能门控**
+> 由 `feature('WEB_BROWSER_TOOL')` 控制。
+
+
+Claude Code 内置了一套浏览器自动化系统，提供两种不同的实现方式：
+
+### 原生 WebView（Bun API）
+
+基于 Bun 的 WebView API 构建的浏览器自动化层。Claude 可以：
+
+- 导航到指定 URL
+- 点击元素和填写表单
+- 对页面进行截图
+- 执行任意 JavaScript
+
+### Chrome DevTools 集成（`claudeInChrome`）
+
+一个直接连接 Chrome DevTools Protocol 的 MCP 服务器，提供更深层的浏览器控制：
+
+- 完整的页面导航和交互
+- 表单填写和元素选择
+- 截图捕获
+- 在页面上下文中执行脚本
+
+这种双重方案让 Claude 既拥有轻量级的内置浏览器，也能在需要时控制完整的 Chrome 实例。
+
+---
+
+## SSH 远程模式
+
+> **功能门控**
+> 由 `feature('SSH_REMOTE')` 控制。
+
+
+SSH 远程模式允许 Claude Code 通过 SSH 在远程机器上执行命令，将代理的能力扩展到本地环境之外。
+
+### 核心组件
+
+- **`RemoteSessionManager.ts`** -- 管理 SSH 连接和会话生命周期
+- **`SessionsWebSocket.ts`** -- WebSocket 传输层，用于与远程主机的实时通信
+
+### 远程权限桥接
+
+当 Claude 需要在远程机器上执行特权操作时，权限系统会跨 SSH 边界工作：
+
+1. Claude 请求远程操作的权限
+2. 请求被转发回本地会话
+3. 用户在本地批准或拒绝
+4. 决定被转发到远程执行上下文
+
+这确保你始终不会失去对 Claude 在远程机器上行为的控制。
+
+---
+
+## 桥接系统 / IDE 集成 (Bridge System)
+
+> **功能门控**
+> 由 `feature('BRIDGE_MODE')` 控制。多会话支持由 GrowthBook 标志 `tengu_ccr_bridge_multi_session` 控制。
+
+
+桥接系统是 Claude Code 的 IDE 集成协议，在 `src/bridge/` 目录下由 30 多个文件实现。它是驱动 VS Code 扩展和其他 IDE 集成的核心骨架。
+
+### 多会话支持
+
+单个环境可以承载**最多 32 个并发 Claude 会话**，每个会话独立管理。这使得在一个 IDE 工作区内进行并行工作流成为可能。
+
+### 启动模式
+
+| 模式 | 行为 |
+|---|---|
+| `single-session` | 同一时间只有一个 Claude 会话 |
+| `worktree` | 每个会话获得一个独立的 git worktree -- 完全的文件系统隔离 |
+| `same-dir` | 多个会话共享同一工作目录 |
+
+### 会话生命周期
+
+```
+register  -->  poll  -->  spawn  -->  heartbeat  -->  done
+```
+
+1. **Register** -- IDE 注册一个新的会话请求
+2. **Poll** -- Claude 轮询待处理的会话请求
+3. **Spawn** -- 会话被创建，Claude 开始工作
+4. **Heartbeat** -- IDE 与 Claude 之间的周期性心跳保活
+5. **Done** -- 会话完成，资源被清理
+
+### 权限流程
+
+桥接系统实现了完整的权限委托链：
+
+1. Claude 会话请求某个操作的权限
+2. IDE 通过 WebSocket 接收请求
+3. 用户在 IDE 界面中做出决定（批准/拒绝）
+4. 响应被转发回 Claude 会话
+
+### 安全性
+
+- **JWT 认证**，用于会话身份验证
+- **可信设备验证**，防止未授权的连接
+- **断线重连支持** -- 会话可以在桥接崩溃后恢复，不会丢失状态
+
+---
+
+## CCR（云计算资源）
+
+> **仅限 Anthropic 内部**
+> 由 `feature('CCR_MIRROR')` 控制。需要 beta 请求头：`anthropic-beta: ccr-triggers-2026-01-30`。
+
+
+CCR 使 Claude Code 能够将重量级计算卸载到 Anthropic 的云基础设施。远程代理任务在服务端运行，可完整使用 Claude 的全部能力。
+
+### 远程任务类型
+
+| 任务类型 | 用途 |
+|---|---|
+| `ultraplan` | 多阶段规划，输出结构化结果 |
+| `ultrareview` | 深度代码审查，带验证功能 |
+| `autofix-pr` | 自动修复 PR |
+| `background-pr` | 后台创建 Pull Request |
+
+### UltraPlan
+
+一个远程多阶段规划系统：
+
+- **`needs_input` 阶段** -- Claude 在规划之前提出澄清性问题
+- **`plan_ready` 阶段** -- 最终规划方案被回传到本地会话
+
+这将昂贵的规划工作卸载到云端，那里有更长的上下文窗口和更多的算力可用。
+
+### UltraReview
+
+一个超越表面 lint 检查的远程代码审查系统：
+
+- **Bug 发现** -- 对逻辑错误和边界情况进行深度分析
+- **验证** -- 对已识别的问题进行自动化检查
+- **误报追踪** -- 记录被标记的问题实际上是误报 (False Positive) 的情况
+
+---
+
+## Undercover 模式
+
+> **仅限 Anthropic 内部**
+> 由 `process.env.USER_TYPE === 'ant'` 控制。Anthropic 员工自动启用。
+
+
+Undercover 模式是一个防泄漏系统，旨在防止内部细节出现在公开仓库中。
+
+### 行为
+
+- **自动检测**用户是否在公开或开源仓库中工作
+- **从提交和 PR 中剥离敏感内容**：
+  - 内部模型代号
+  - 内部项目名称
+  - Slack 频道引用
+- **始终开启**，除非该仓库明确在内部白名单中（`INTERNAL_MODEL_REPOS`）
+- **没有强制关闭选项** -- 这是有意为之，以防止意外泄漏
+
+### 环境变量
+
+```
+CLAUDE_CODE_UNDERCOVER=1
+```
+
+此环境变量可以强制开启 Undercover 模式，不受用户类型限制，适用于测试或在敏感场景下增加额外的安全保障。没有对应的变量可以强制关闭它。

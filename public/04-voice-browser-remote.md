@@ -1,0 +1,198 @@
+> **Disclaimer**
+> All analysis is based on a specific version of the Claude Code source at [instructkr/claude-code](https://github.com/instructkr/claude-code). Claude Code is **not** open-source — all intellectual property belongs to **Anthropic**. This is independent source code analysis only.
+
+
+Beyond the core CLI experience, Claude Code contains fully built but unreleased systems for voice interaction, browser automation, remote execution, cloud compute, and deep IDE integration. These features represent the next generation of Claude Code's capabilities.
+
+## Voice Mode
+
+> **Feature Gate**
+> Triple-gated: `feature('VOICE_MODE') && isVoiceGrowthBookEnabled() && isAnthropicAuthEnabled()`. The GrowthBook flag `tengu_amber_quartz_disabled` acts as a killswitch.
+
+
+Voice Mode adds real-time speech input to Claude Code, turning the terminal into a voice-driven coding assistant.
+
+### How It Works
+
+- **Real-time voice-to-text streaming** via `voiceStreamSTT.ts` -- speech is transcribed as you talk, not after you finish
+- **Push-to-talk** activation bound to the **space bar** keybinding
+- **Key term boosting** through `voiceKeyterms.ts` -- technical vocabulary (API names, language keywords, framework terms) gets priority in transcription to reduce errors on developer jargon
+
+### Gate Structure
+
+All three conditions must be true simultaneously:
+
+1. `feature('VOICE_MODE')` feature flag is enabled
+2. `isVoiceGrowthBookEnabled()` returns true (GrowthBook remote config)
+3. `isAnthropicAuthEnabled()` confirms Anthropic authentication is active
+
+The killswitch flag `tengu_amber_quartz_disabled` can shut down Voice Mode remotely without a code deploy.
+
+---
+
+## Web Browser Tool
+
+> **Feature Gate**
+> Gated by `feature('WEB_BROWSER_TOOL')`.
+
+
+Claude Code includes a built-in browser automation system with two distinct approaches:
+
+### Native WebView (Bun API)
+
+A browser automation layer built on top of Bun's WebView API. Claude can:
+
+- Navigate to URLs
+- Click elements and fill forms
+- Take screenshots of pages
+- Evaluate arbitrary JavaScript
+
+### Chrome DevTools Integration (`claudeInChrome`)
+
+An MCP server that connects directly to Chrome DevTools Protocol, providing deeper browser control:
+
+- Full page navigation and interaction
+- Form filling and element selection
+- Screenshot capture
+- Script evaluation in page context
+
+This dual approach gives Claude both a lightweight built-in browser and the ability to control a full Chrome instance when needed.
+
+---
+
+## SSH Remote Mode
+
+> **Feature Gate**
+> Gated by `feature('SSH_REMOTE')`.
+
+
+SSH Remote Mode allows Claude Code to execute commands on remote machines over SSH, extending the agent beyond the local environment.
+
+### Key Components
+
+- **`RemoteSessionManager.ts`** -- manages SSH connections and session lifecycle
+- **`SessionsWebSocket.ts`** -- WebSocket transport layer for real-time communication with remote hosts
+
+### Remote Permission Bridge
+
+When Claude needs to perform a privileged action on a remote machine, the permission system works across the SSH boundary:
+
+1. Claude requests permission for a remote action
+2. The request is forwarded back to the local session
+3. The user approves or denies locally
+4. The decision is relayed to the remote execution context
+
+This ensures you never lose control over what Claude does on remote machines.
+
+---
+
+## Bridge System / IDE Integration
+
+> **Feature Gate**
+> Gated by `feature('BRIDGE_MODE')`. Multi-session support gated by GrowthBook flag `tengu_ccr_bridge_multi_session`.
+
+
+The Bridge System is Claude Code's IDE integration protocol, implemented across 30+ files in `src/bridge/`. This is the backbone that powers the VS Code extension and other IDE integrations.
+
+### Multi-Session Support
+
+A single environment can host **up to 32 concurrent Claude sessions**, each independently managed. This enables parallel workstreams within one IDE workspace.
+
+### Spawn Modes
+
+| Mode | Behavior |
+|---|---|
+| `single-session` | One Claude session at a time |
+| `worktree` | Each session gets an isolated git worktree -- full filesystem isolation |
+| `same-dir` | Multiple sessions share the same working directory |
+
+### Session Lifecycle
+
+```
+register  -->  poll  -->  spawn  -->  heartbeat  -->  done
+```
+
+1. **Register** -- IDE registers a new session request
+2. **Poll** -- Claude polls for pending session requests
+3. **Spawn** -- Session is created and Claude begins work
+4. **Heartbeat** -- Periodic keepalive between IDE and Claude
+5. **Done** -- Session completes and resources are cleaned up
+
+### Permission Flow
+
+The Bridge System implements a full permission delegation chain:
+
+1. Claude session requests permission for an action
+2. IDE receives the request via WebSocket
+3. User decides (approve/deny) within the IDE UI
+4. Response is forwarded back to the Claude session
+
+### Security
+
+- **JWT authentication** for session identity verification
+- **Trusted device verification** to prevent unauthorized connections
+- **Reconnection support** -- sessions can resume after a bridge crash without losing state
+
+---
+
+## CCR (Cloud Compute Resource)
+
+> **Ant-Only**
+> Gated by `feature('CCR_MIRROR')`. Requires beta header: `anthropic-beta: ccr-triggers-2026-01-30`.
+
+
+CCR enables Claude Code to offload heavy computation to Anthropic's cloud infrastructure. Remote agent tasks run server-side with full access to Claude's capabilities.
+
+### Remote Task Types
+
+| Task Type | Purpose |
+|---|---|
+| `ultraplan` | Multi-phase planning with structured output |
+| `ultrareview` | Deep code review with verification |
+| `autofix-pr` | Automated PR fixes |
+| `background-pr` | Background pull request creation |
+
+### UltraPlan
+
+A remote multi-phase planning system:
+
+- **`needs_input` phase** -- Claude asks clarifying questions before planning
+- **`plan_ready` phase** -- the finalized plan is delivered back to the local session
+
+This offloads expensive planning work to cloud compute where longer context windows and more compute are available.
+
+### UltraReview
+
+A remote code review system that goes beyond surface-level linting:
+
+- **Bug finding** -- deep analysis for logical errors and edge cases
+- **Verification** -- automated checks against the identified issues
+- **Refutation tracking** -- tracks when a flagged issue is actually a false positive
+
+---
+
+## Undercover Mode
+
+> **Ant-Only**
+> Gated by `process.env.USER_TYPE === 'ant'`. Automatically enabled for Anthropic employees.
+
+
+Undercover Mode is a leak-prevention system designed to keep internal details out of public repositories.
+
+### Behavior
+
+- **Auto-detects** when the user is working in a public or open-source repository
+- **Strips sensitive content** from commits and PRs:
+  - Internal model codenames
+  - Internal project names
+  - Slack channel references
+- **Always ON** unless the repository is explicitly in the internal allowlist (`INTERNAL_MODEL_REPOS`)
+- **No force-OFF option** -- this is intentional to prevent accidental leaks
+
+### Environment Variable
+
+```
+CLAUDE_CODE_UNDERCOVER=1
+```
+
+This env var forces Undercover Mode ON regardless of user type, useful for testing or for extra caution in sensitive contexts. There is no equivalent variable to force it off.
